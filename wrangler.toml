@@ -1,4 +1,4 @@
-name = "shortlink-worker"
+name = "short"
 main = "worker.js"
 compatibility_date = "2024-11-12"
 
