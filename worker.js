@@ -1,6 +1,5 @@
 export default {
   async fetch(request, env, ctx) {
-    // ✅ CORS 处理
     if (request.method === "OPTIONS") {
       return new Response("", { headers: corsHeaders() });
     }
@@ -13,15 +12,12 @@ export default {
     }
 
     try {
-      // 📦 读取请求体
       const { longURL, redirect } = await request.json();
       if (!longURL) throw new Error("Missing longURL");
 
-      // === 🧩 Short.io 配置 ===
-      const SHORTIO_DOMAIN = "pwbtw.com"; // ✅ 域名
-      const SHORTIO_SECRET_KEY = env.SHORTIO_SECRET_KEY || "sk_xaA50GA8UhRaAtsh"; // ✅ API Key
+      const SHORTIO_DOMAIN = "pwbtw.com";
+      const SHORTIO_SECRET_KEY = env.SHORTIO_SECRET_KEY || "sk_xaA50GA8UhRaAtsh";
 
-      // === 🧠 解析 UID / 到期时间 ===
       const now = Date.now();
       const uidMatch = longURL.match(/uid=([^&]+)/);
       const expMatch = longURL.match(/exp=(\d+)/);
@@ -30,25 +26,29 @@ export default {
       let expDateText = "";
       let expTime = null;
       let durationText = "短期";
+      let isPermanent = false;
 
       if (expMatch) {
         expTime = Number(expMatch[1]);
         const diffDays = (expTime - now) / (1000 * 60 * 60 * 24);
-        const expDate = new Date(expTime + 8 * 60 * 60 * 1000); // 🇲🇾 UTC+8
-        expDateText = expDate.toISOString().slice(0, 10);
 
-        if (diffDays > 35000) durationText = "永久";
-        else if (diffDays > 300) durationText = "1年";
-        else if (diffDays > 25) durationText = "1月";
-        else durationText = "短期";
+        if (diffDays > 35000) {
+          durationText = "永久";
+          expDateText = "永久";
+          isPermanent = true;
+        } else {
+          const expDate = new Date(expTime + 8 * 60 * 60 * 1000);
+          expDateText = expDate.toISOString().slice(0, 10);
+
+          if (diffDays > 300) durationText = "1年";
+          else if (diffDays > 25) durationText = "1月";
+          else durationText = "短期";
+        }
       }
 
-      // 🇲🇾 当前时间
       const malaysiaNow = new Date(Date.now() + 8 * 60 * 60 * 1000);
       const dateMY = malaysiaNow.toISOString().slice(0, 10);
 
-      // === 🏷️ 新标题格式 ===
-      // ✅ 最终样式： (uid - 到期日期 - 短期/1年/永久)
       let title = "";
       if (uid && expDateText)
         title = `(${uid} - ${expDateText} - ${durationText})`;
@@ -59,7 +59,6 @@ export default {
       else
         title = `(OTT 链接 - ${dateMY})`;
 
-      // === 🔁 生成唯一 ID（防冲突）===
       let id, shortData;
       for (let i = 0; i < 5; i++) {
         id = "id" + Math.floor(1000 + Math.random() * 90000);
@@ -79,38 +78,39 @@ export default {
         });
 
         const data = await res.json();
-
         if (res.ok && data.shortURL) {
           shortData = data;
           break;
         }
-
         if (data.error && data.error.includes("already exists")) continue;
         else throw new Error(data.error || "Short.io API Error");
       }
 
       if (!shortData) throw new Error("无法生成短链接，请稍后重试。");
 
-      // === 💾 存储到 KV（含过期时间）===
-      if (expTime) {
-        const record = {
-          id,
-          shortURL: shortData.shortURL,
-          longURL,
-          exp: expTime,
-          created: now,
-        };
+      // 💾 KV存储（永久链接不设过期）
+      const record = {
+        id,
+        shortURL: shortData.shortURL,
+        longURL,
+        exp: isPermanent ? null : expTime,
+        created: now,
+      };
+
+      if (isPermanent) {
+        await env.LINKS_KV.put(id, JSON.stringify(record));
+      } else {
         await env.LINKS_KV.put(id, JSON.stringify(record), {
           expiration: Math.floor(expTime / 1000),
         });
       }
 
-      // === 📺 redirect 模式 ===
+      // 📺 redirect 模式
       if (redirect === true || redirect === "1") {
         return Response.redirect(shortData.shortURL, 302);
       }
 
-      // === ✅ 浏览器可直接显示短链 ===
+      // ✅ 浏览器可直接显示短链
       const accept = request.headers.get("Accept") || "";
       if (accept.includes("text/html") || accept.includes("text/plain")) {
         return new Response(shortData.shortURL, {
@@ -119,9 +119,14 @@ export default {
         });
       }
 
-      // === 默认返回 JSON（API 模式）===
+      // 默认返回 JSON
       return new Response(
-        JSON.stringify({ shortURL: shortData.shortURL, title, expDate: expDateText }),
+        JSON.stringify({
+          shortURL: shortData.shortURL,
+          title,
+          expDate: expDateText,
+          duration: durationText,
+        }),
         { status: 200, headers: corsHeaders() }
       );
     } catch (err) {
@@ -132,7 +137,7 @@ export default {
     }
   },
 
-  // === ⏰ 定时触发器：自动清理过期短链 ===
+  // 定时清理（忽略永久）
   async scheduled(event, env, ctx) {
     const list = await env.LINKS_KV.list();
     const now = Date.now();
@@ -148,7 +153,6 @@ export default {
   },
 };
 
-// === 🌐 CORS 设置 ===
 function corsHeaders() {
   return {
     "Access-Control-Allow-Origin": "*",
