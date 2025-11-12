@@ -30,26 +30,34 @@ export default {
 
       let expDateText = "";
       let expTime = null;
+      let durationText = "";
+
       if (expMatch) {
         expTime = Number(expMatch[1]);
         const diffDays = (expTime - now) / (1000 * 60 * 60 * 24);
         const expDate = new Date(expTime + 8 * 60 * 60 * 1000); // 🇲🇾 UTC+8
         expDateText = expDate.toISOString().slice(0, 10);
 
-        if (diffDays > 35000) title = "OTT 永久链接";
-        else if (diffDays > 300) title = "OTT 1年链接";
-        else if (diffDays > 25) title = "OTT 1个月链接";
-        else title = "OTT 短期链接";
-
-        // 🗓️ 加入到期日
-        title += ` · 到期:${expDateText}`;
+        if (diffDays > 35000) durationText = "永久";
+        else if (diffDays > 300) durationText = "1年";
+        else if (diffDays > 25) durationText = "1个月";
+        else durationText = "短期";
       }
 
       // 🇲🇾 当前日期
       const malaysiaNow = new Date(Date.now() + 8 * 60 * 60 * 1000);
       const dateMY = malaysiaNow.toISOString().slice(0, 10);
-      if (uid) title += ` (${uid} · ${dateMY})`;
-      else title += ` (${dateMY})`;
+
+      // === 📛 新标题格式 ===
+      // ✅ 格式： (uid - 到期:2025-11-12 - OTT 短期链接) + (日期)
+      if (uid && expDateText)
+        title = `${uid} - 到期:${expDateText} - OTT ${durationText}链接 (${dateMY})`;
+      else if (uid && !expDateText)
+        title = `${uid} - OTT 链接 (${dateMY})`;
+      else if (!uid && expDateText)
+        title = `到期:${expDateText} - OTT ${durationText}链接 (${dateMY})`;
+      else
+        title = `OTT 链接 (${dateMY})`;
 
       // === 🔁 生成唯一 ID（自动防冲突）===
       let id, shortData;
@@ -92,7 +100,9 @@ export default {
           exp: expTime,
           created: now,
         };
-        await env.LINKS_KV.put(id, JSON.stringify(record), { expiration: Math.floor(expTime / 1000) });
+        await env.LINKS_KV.put(id, JSON.stringify(record), {
+          expiration: Math.floor(expTime / 1000),
+        });
       }
 
       // === 📺 redirect 模式（TV设备自动跳转）===
@@ -101,11 +111,13 @@ export default {
       }
 
       // === 默认返回 JSON（适合网页端）===
-      return new Response(JSON.stringify({ shortURL: shortData.shortURL, expDate: expDateText }), {
-        status: 200,
-        headers: corsHeaders(),
-      });
-
+      return new Response(
+        JSON.stringify({ shortURL: shortData.shortURL, expDate: expDateText }),
+        {
+          status: 200,
+          headers: corsHeaders(),
+        }
+      );
     } catch (err) {
       return new Response(JSON.stringify({ error: err.message }), {
         status: 500,
@@ -139,4 +151,4 @@ function corsHeaders() {
     "Access-Control-Allow-Credentials": "true",
     "Content-Type": "application/json",
   };
-}
+        }
