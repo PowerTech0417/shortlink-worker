@@ -4,7 +4,7 @@ compatibility_date = "2024-11-12"
 
 [[kv_namespaces]]
 binding = "LINKS_KV"
-id = "your_kv_namespace_id"
+id = "717512fbc55f4486ac9ad03307080ecb"
 
 [triggers]
 crons = ["0 0 * * *"] # 每天自动执行 scheduled()
