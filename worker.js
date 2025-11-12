@@ -1,39 +1,10 @@
 export default {
   async fetch(request, env, ctx) {
-    // === ✅ CORS 处理 ===
+    // ✅ CORS 处理
     if (request.method === "OPTIONS") {
       return new Response("", { headers: corsHeaders() });
     }
 
-    // === 🧹 定期清理已过期短链接 ===
-    if (request.method === "DELETE") {
-      try {
-        const list = await env.LINKS.list();
-        const now = Date.now();
-        let removed = 0;
-
-        for (const item of list.keys) {
-          const value = await env.LINKS.get(item.name);
-          if (!value) continue; // 🛡️ 避免 JSON 解析错误
-          const data = JSON.parse(value);
-          if (data.exp && data.exp < now) {
-            await env.LINKS.delete(item.name);
-            removed++;
-          }
-        }
-
-        return new Response(JSON.stringify({ cleaned: removed }), {
-          headers: corsHeaders(),
-        });
-      } catch (err) {
-        return new Response(JSON.stringify({ error: err.message }), {
-          status: 500,
-          headers: corsHeaders(),
-        });
-      }
-    }
-
-    // === ⛔ 仅支持 POST ===
     if (request.method !== "POST") {
       return new Response("Method Not Allowed", {
         status: 405,
@@ -41,54 +12,46 @@ export default {
       });
     }
 
-    // === 📦 主体逻辑 ===
     try {
+      // 📦 读取请求体
       const { longURL, redirect } = await request.json();
       if (!longURL) throw new Error("Missing longURL");
 
       // === 🧩 Short.io 配置 ===
       const SHORTIO_DOMAIN = "pwbtw.com"; // ✅ 域名
-      const SHORTIO_SECRET_KEY =
-        env.SHORTIO_SECRET_KEY || "sk_xaA50GA8UhRaAtsh"; // ✅ API Key (建议改为环境变量)
+      const SHORTIO_SECRET_KEY = env.SHORTIO_SECRET_KEY || "sk_xaA50GA8UhRaAtsh"; // ✅ API Key
 
-      // === 🧠 解析 UID & 到期日期 ===
-      const uidMatch = longURL.match(/uid=([^&]+)/);
-      const expMatch = longURL.match(/exp=(\d+)/);
-      const uid = uidMatch ? decodeURIComponent(uidMatch[1]) : null;
+      // === 🧠 智能标题生成 ===
+      let title = "link";
       const now = Date.now();
+      const expMatch = longURL.match(/exp=(\d+)/);
+      const uidMatch = longURL.match(/uid=([^&]+)/);
+      const uid = uidMatch ? decodeURIComponent(uidMatch[1]) : null;
 
-      let expTime = expMatch ? Number(expMatch[1]) : null;
-      let durationText = "";
       let expDateText = "";
-
-      if (expTime) {
+      let expTime = null;
+      if (expMatch) {
+        expTime = Number(expMatch[1]);
         const diffDays = (expTime - now) / (1000 * 60 * 60 * 24);
-        if (diffDays > 35000) durationText = "永久";
-        else if (diffDays > 300) durationText = "1年";
-        else if (diffDays > 25) durationText = "1月";
-        else durationText = "短期";
-
-        const expDate = new Date(expTime + 8 * 60 * 60 * 1000);
+        const expDate = new Date(expTime + 8 * 60 * 60 * 1000); // 🇲🇾 UTC+8
         expDateText = expDate.toISOString().slice(0, 10);
+
+        if (diffDays > 35000) title = "OTT 永久链接";
+        else if (diffDays > 300) title = "OTT 1年链接";
+        else if (diffDays > 25) title = "OTT 1个月链接";
+        else title = "OTT 短期链接";
+
+        // 🗓️ 加入到期日
+        title += ` · 到期:${expDateText}`;
       }
 
-      // 🇲🇾 马来西亚时间
+      // 🇲🇾 当前日期
       const malaysiaNow = new Date(Date.now() + 8 * 60 * 60 * 1000);
       const dateMY = malaysiaNow.toISOString().slice(0, 10);
+      if (uid) title += ` (${uid} · ${dateMY})`;
+      else title += ` (${dateMY})`;
 
-      // === 📛 标题格式 ===
-      let title = "";
-      if (expDateText) {
-        if (uid)
-          title = `${uid} · 到期:${expDateText} · OTT ${durationText}链接 (${dateMY})`;
-        else
-          title = `到期:${expDateText} · OTT ${durationText}链接 (${dateMY})`;
-      } else {
-        if (uid) title = `${uid} · OTT 链接 (${dateMY})`;
-        else title = `OTT 链接 (${dateMY})`;
-      }
-
-      // === 🔁 创建短链接（自动重试避免冲突）===
+      // === 🔁 生成唯一 ID（自动防冲突）===
       let id, shortData;
       for (let i = 0; i < 5; i++) {
         id = "id" + Math.floor(1000 + Math.random() * 90000);
@@ -107,40 +70,42 @@ export default {
           }),
         });
 
-        const data = await res.json().catch(() => ({})); // 🛡️ 防止 JSON 解析出错
+        const data = await res.json();
 
         if (res.ok && data.shortURL) {
           shortData = data;
           break;
         }
 
-        if (data?.error?.includes("already exists")) continue;
-        else if (data?.error) throw new Error(data.error);
+        if (data.error && data.error.includes("already exists")) continue;
+        else throw new Error(data.error || "Short.io API Error");
       }
 
       if (!shortData) throw new Error("无法生成短链接，请稍后重试。");
 
-      // === 💾 保存到 KV ===
-      const record = {
-        uid,
-        longURL,
-        shortURL: shortData.shortURL,
-        exp: expTime || null,
-        created: now,
-        title,
-      };
-      await env.LINKS.put(id, JSON.stringify(record));
+      // === 💾 存储到 KV（含过期时间） ===
+      if (expTime) {
+        const record = {
+          id,
+          shortURL: shortData.shortURL,
+          longURL,
+          exp: expTime,
+          created: now,
+        };
+        await env.LINKS_KV.put(id, JSON.stringify(record), { expiration: Math.floor(expTime / 1000) });
+      }
 
-      // === 📺 redirect 模式 ===
+      // === 📺 redirect 模式（TV设备自动跳转）===
       if (redirect === true || redirect === "1") {
         return Response.redirect(shortData.shortURL, 302);
       }
 
-      // === 📦 返回结果 ===
-      return new Response(JSON.stringify({ shortURL: shortData.shortURL }), {
+      // === 默认返回 JSON（适合网页端）===
+      return new Response(JSON.stringify({ shortURL: shortData.shortURL, expDate: expDateText }), {
         status: 200,
         headers: corsHeaders(),
       });
+
     } catch (err) {
       return new Response(JSON.stringify({ error: err.message }), {
         status: 500,
@@ -148,13 +113,28 @@ export default {
       });
     }
   },
+
+  // === ⏰ 定时触发器，用于清理过期链接 ===
+  async scheduled(event, env, ctx) {
+    const list = await env.LINKS_KV.list();
+    const now = Date.now();
+
+    for (const item of list.keys) {
+      const data = await env.LINKS_KV.get(item.name, { type: "json" });
+      if (!data) continue;
+      if (data.exp && now > data.exp) {
+        await env.LINKS_KV.delete(item.name);
+        console.log(`🗑️ 已删除过期链接: ${data.shortURL}`);
+      }
+    }
+  },
 };
 
-// === 🌐 CORS 设置 ===
+// === 🌐 CORS 支持 ===
 function corsHeaders() {
   return {
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "POST, DELETE, OPTIONS",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Authorization",
     "Access-Control-Allow-Credentials": "true",
     "Content-Type": "application/json",
