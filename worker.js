@@ -21,16 +21,15 @@ export default {
       const SHORTIO_DOMAIN = "pwbtw.com"; // ✅ 域名
       const SHORTIO_SECRET_KEY = env.SHORTIO_SECRET_KEY || "sk_xaA50GA8UhRaAtsh"; // ✅ API Key
 
-      // === 🧠 智能标题生成 ===
-      let title = "link";
+      // === 🧠 解析 UID / 到期时间 ===
       const now = Date.now();
-      const expMatch = longURL.match(/exp=(\d+)/);
       const uidMatch = longURL.match(/uid=([^&]+)/);
+      const expMatch = longURL.match(/exp=(\d+)/);
       const uid = uidMatch ? decodeURIComponent(uidMatch[1]) : null;
 
       let expDateText = "";
       let expTime = null;
-      let durationText = "";
+      let durationText = "短期";
 
       if (expMatch) {
         expTime = Number(expMatch[1]);
@@ -40,26 +39,27 @@ export default {
 
         if (diffDays > 35000) durationText = "永久";
         else if (diffDays > 300) durationText = "1年";
-        else if (diffDays > 25) durationText = "1个月";
+        else if (diffDays > 25) durationText = "1月";
         else durationText = "短期";
       }
 
-      // 🇲🇾 当前日期
+      // 🇲🇾 当前时间
       const malaysiaNow = new Date(Date.now() + 8 * 60 * 60 * 1000);
       const dateMY = malaysiaNow.toISOString().slice(0, 10);
 
-      // === 📛 新标题格式 ===
-      // ✅ 格式： (uid - 到期:2025-11-12 - OTT 短期链接) + (日期)
+      // === 🏷️ 新标题格式 ===
+      // ✅ 最终样式： (uid - 到期日期 - 短期/1年/永久)
+      let title = "";
       if (uid && expDateText)
-        title = `${uid} - 到期:${expDateText} - OTT ${durationText}链接 (${dateMY})`;
-      else if (uid && !expDateText)
-        title = `${uid} - OTT 链接 (${dateMY})`;
-      else if (!uid && expDateText)
-        title = `到期:${expDateText} - OTT ${durationText}链接 (${dateMY})`;
+        title = `(${uid} - ${expDateText} - ${durationText})`;
+      else if (uid)
+        title = `(${uid} - ${durationText})`;
+      else if (expDateText)
+        title = `(到期:${expDateText} - ${durationText})`;
       else
-        title = `OTT 链接 (${dateMY})`;
+        title = `(OTT 链接 - ${dateMY})`;
 
-      // === 🔁 生成唯一 ID（自动防冲突）===
+      // === 🔁 生成唯一 ID（防冲突）===
       let id, shortData;
       for (let i = 0; i < 5; i++) {
         id = "id" + Math.floor(1000 + Math.random() * 90000);
@@ -91,7 +91,7 @@ export default {
 
       if (!shortData) throw new Error("无法生成短链接，请稍后重试。");
 
-      // === 💾 存储到 KV（含过期时间） ===
+      // === 💾 存储到 KV（含过期时间）===
       if (expTime) {
         const record = {
           id,
@@ -105,18 +105,24 @@ export default {
         });
       }
 
-      // === 📺 redirect 模式（TV设备自动跳转）===
+      // === 📺 redirect 模式 ===
       if (redirect === true || redirect === "1") {
         return Response.redirect(shortData.shortURL, 302);
       }
 
-      // === 默认返回 JSON（适合网页端）===
-      return new Response(
-        JSON.stringify({ shortURL: shortData.shortURL, expDate: expDateText }),
-        {
+      // === ✅ 浏览器可直接显示短链 ===
+      const accept = request.headers.get("Accept") || "";
+      if (accept.includes("text/html") || accept.includes("text/plain")) {
+        return new Response(shortData.shortURL, {
           status: 200,
-          headers: corsHeaders(),
-        }
+          headers: { "Content-Type": "text/plain" },
+        });
+      }
+
+      // === 默认返回 JSON（API 模式）===
+      return new Response(
+        JSON.stringify({ shortURL: shortData.shortURL, title, expDate: expDateText }),
+        { status: 200, headers: corsHeaders() }
       );
     } catch (err) {
       return new Response(JSON.stringify({ error: err.message }), {
@@ -126,7 +132,7 @@ export default {
     }
   },
 
-  // === ⏰ 定时触发器，用于清理过期链接 ===
+  // === ⏰ 定时触发器：自动清理过期短链 ===
   async scheduled(event, env, ctx) {
     const list = await env.LINKS_KV.list();
     const now = Date.now();
@@ -142,7 +148,7 @@ export default {
   },
 };
 
-// === 🌐 CORS 支持 ===
+// === 🌐 CORS 设置 ===
 function corsHeaders() {
   return {
     "Access-Control-Allow-Origin": "*",
@@ -151,4 +157,4 @@ function corsHeaders() {
     "Access-Control-Allow-Credentials": "true",
     "Content-Type": "application/json",
   };
-        }
+}
