@@ -33,10 +33,11 @@ export default {
       const { longURL, redirect } = await request.json();
       if (!longURL) throw new Error("Missing longURL");
 
-      // === ⚙️ Short.io 设置 ===
-      const SHORTIO_DOMAIN = "pwbtw.com";
-      const SHORTIO_SECRET_KEY = env.SHORTIO_SECRET_KEY;
-
+     // === 🧩 Short.io 配置 ===
+      const SHORTIO_DOMAIN = "pwbtw.com"; // ✅ 域名
+      const SHORTIO_SECRET_KEY = env.SHORTIO_SECRET_KEY || 
+        "sk_xaA50GA8UhRaAtsh"; // ✅ API Key
+      
       // === 🧠 解析 UID & 到期日期 ===
       const uidMatch = longURL.match(/uid=([^&]+)/);
       const expMatch = longURL.match(/exp=(\d+)/);
